@@ -211,19 +211,23 @@ public class MachineTests
     }
 
     [Fact]
-    public void EnableAndDisableAreIdempotent()
+    public void EnablementOperationsAreInternalToTheCoreAssembly()
     {
-        var machine = CreateMachine();
+        var enable = typeof(Machine).GetMethod(
+            "Enable",
+            System.Reflection.BindingFlags.Instance |
+            System.Reflection.BindingFlags.NonPublic);
+        var disable = typeof(Machine).GetMethod(
+            "Disable",
+            System.Reflection.BindingFlags.Instance |
+            System.Reflection.BindingFlags.NonPublic);
 
-        machine.Enable();
-        machine.Enable();
-
-        Assert.True(machine.IsEnabled);
-
-        machine.Disable();
-        machine.Disable();
-
-        Assert.False(machine.IsEnabled);
+        Assert.NotNull(enable);
+        Assert.NotNull(disable);
+        Assert.True(enable.IsAssembly);
+        Assert.True(disable.IsAssembly);
+        Assert.False(enable.IsPublic);
+        Assert.False(disable.IsPublic);
     }
 
     [Fact]

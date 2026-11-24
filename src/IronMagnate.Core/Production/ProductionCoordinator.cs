@@ -46,6 +46,7 @@ public sealed class ProductionCoordinator
 
         machine.Disable();
         workforce.ReleaseWorkstation(machine.Id.ToString());
+        FillEnabledMachines(workforce);
         return true;
     }
 

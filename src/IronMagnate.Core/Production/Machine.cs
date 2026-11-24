@@ -73,12 +73,12 @@ public sealed class Machine
         OutputBuffer = new MachineOutputBuffer(outputBufferCapacity);
     }
 
-    public void Enable()
+    internal void Enable()
     {
         IsEnabled = true;
     }
 
-    public void Disable()
+    internal void Disable()
     {
         IsEnabled = false;
     }

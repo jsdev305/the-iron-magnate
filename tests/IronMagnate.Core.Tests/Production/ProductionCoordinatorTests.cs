@@ -153,7 +153,6 @@ public class ProductionCoordinatorTests
         var machine = CreateMachine(requiredCrew: 5);
         var workforce = CreateWorkforce(5);
         AssignWorkers(workforce, machine.Id, 5);
-        machine.Disable();
         coordinator.RegisterMachine(machine);
 
         Assert.True(coordinator.IsFullyStaffed(machine.Id, workforce));
@@ -633,17 +632,16 @@ public class ProductionCoordinatorTests
     }
 
     [Fact]
-    public void FillEnabledMachinesPreservesAssignmentsWhenAMachineIsDisabled()
+    public void DisableMachineReleasesAssignmentsBeforeSubsequentStaffingPasses()
     {
         var coordinator = new ProductionCoordinator();
         var machine = RegisterEnabledMachine(coordinator, requiredCrew: 2);
         var workforce = CreateWorkforce(2);
         coordinator.FillEnabledMachines(workforce);
-        var assignmentsBeforeDisabling = workforce.Assignments;
-        machine.Disable();
+        Assert.True(coordinator.DisableMachine(machine.Id, workforce));
 
         Assert.Equal(0, coordinator.FillEnabledMachines(workforce));
-        Assert.Equal(assignmentsBeforeDisabling, workforce.Assignments);
+        Assert.Empty(workforce.Assignments);
     }
 
     [Fact]
@@ -674,10 +672,10 @@ public class ProductionCoordinatorTests
         var secondById = CreateMachine(
             id: Guid.Parse("00000000-0000-0000-0000-000000000002"),
             requiredCrew: 2);
-        secondById.Enable();
-        firstById.Enable();
         coordinator.RegisterMachine(secondById);
         coordinator.RegisterMachine(firstById);
+        coordinator.EnableMachine(secondById.Id, CreateWorkforce(0));
+        coordinator.EnableMachine(firstById.Id, CreateWorkforce(0));
         var workforce = CreateWorkforce(3);
 
         coordinator.FillEnabledMachines(workforce);
@@ -788,10 +786,10 @@ public class ProductionCoordinatorTests
         var secondById = CreateMachine(
             Guid.Parse("00000000-0000-0000-0000-000000000002"),
             requiredCrew: 2);
-        firstById.Enable();
-        secondById.Enable();
         Assert.True(coordinator.RegisterMachine(secondById));
         Assert.True(coordinator.RegisterMachine(firstById));
+        coordinator.EnableMachine(secondById.Id, CreateWorkforce(0));
+        coordinator.EnableMachine(firstById.Id, CreateWorkforce(0));
         var workforce = CreateWorkforce(2);
 
         var assigned = coordinator.FillEnabledMachines(workforce);
@@ -831,10 +829,36 @@ public class ProductionCoordinatorTests
         Assert.Equal(0, coordinator.EnableMachine(secondMachine.Id, workforce));
 
         Assert.True(coordinator.DisableMachine(firstMachine.Id, workforce));
-        Assert.Equal(2, coordinator.FillEnabledMachines(workforce));
 
         Assert.Equal(0, AssignedCrewCount(workforce, firstMachine.Id));
         Assert.Equal(2, AssignedCrewCount(workforce, secondMachine.Id));
+    }
+
+    [Fact]
+    public void ShutdownReassignmentSkipsMachinesThatCannotReceiveACompleteCrew()
+    {
+        var coordinator = new ProductionCoordinator();
+        var shuttingDownMachine = CreateMachine(
+            Guid.Parse("00000000-0000-0000-0000-000000000003"),
+            requiredCrew: 2);
+        var incompleteMachine = CreateMachine(
+            Guid.Parse("00000000-0000-0000-0000-000000000001"),
+            requiredCrew: 3);
+        var recipientMachine = CreateMachine(
+            Guid.Parse("00000000-0000-0000-0000-000000000002"),
+            requiredCrew: 2);
+        Assert.True(coordinator.RegisterMachine(shuttingDownMachine));
+        Assert.True(coordinator.RegisterMachine(incompleteMachine));
+        Assert.True(coordinator.RegisterMachine(recipientMachine));
+        var workforce = CreateWorkforce(2);
+        Assert.Equal(2, coordinator.EnableMachine(shuttingDownMachine.Id, workforce));
+        Assert.Equal(0, coordinator.EnableMachine(incompleteMachine.Id, workforce));
+        Assert.Equal(0, coordinator.EnableMachine(recipientMachine.Id, workforce));
+
+        Assert.True(coordinator.DisableMachine(shuttingDownMachine.Id, workforce));
+
+        Assert.Equal(0, AssignedCrewCount(workforce, incompleteMachine.Id));
+        Assert.Equal(2, AssignedCrewCount(workforce, recipientMachine.Id));
     }
 
     [Fact]
@@ -849,13 +873,36 @@ public class ProductionCoordinatorTests
         Assert.Equal(2, coordinator.EnableMachine(firstMachine.Id, workforce));
         Assert.Equal(0, coordinator.EnableMachine(secondMachine.Id, workforce));
         Assert.True(coordinator.DisableMachine(firstMachine.Id, workforce));
-        Assert.Equal(2, coordinator.FillEnabledMachines(workforce));
 
         var assignedOnRestart = coordinator.EnableMachine(firstMachine.Id, workforce);
 
         Assert.Equal(0, assignedOnRestart);
         Assert.Equal(0, AssignedCrewCount(workforce, firstMachine.Id));
         Assert.Equal(2, AssignedCrewCount(workforce, secondMachine.Id));
+    }
+
+    [Fact]
+    public void EnablingAndDisablingMachinePreservesAnActiveCycleAndItsCommittedState()
+    {
+        var coordinator = new ProductionCoordinator();
+        var schematic = CreateSchematic(
+            "Copper plate",
+            new Dictionary<ResourceType, int> { [ResourceType.IronOre] = 1 });
+        var machine = CreateEnabledMachine(coordinator, schematic, requiredCrew: 1);
+        var workforce = CreateWorkforce(1);
+        Assert.True(workforce.TryAssign(workforce.Employees.Single().Id, machine.Id.ToString()));
+        var storage = RawMaterialsStorage((ResourceType.IronOre, 1));
+        Assert.True(coordinator.TryStartCycle(machine.Id, workforce, hasPower: true, storage));
+        var activeCycle = machine.ActiveCycle;
+        var reservedOutput = machine.OutputBuffer.ReservedQuantity;
+        var remainingInput = storage.GetQuantity(ResourceType.IronOre);
+
+        Assert.True(coordinator.DisableMachine(machine.Id, workforce));
+        Assert.Equal(1, coordinator.EnableMachine(machine.Id, workforce));
+
+        Assert.Same(activeCycle, machine.ActiveCycle);
+        Assert.Equal(reservedOutput, machine.OutputBuffer.ReservedQuantity);
+        Assert.Equal(remainingInput, storage.GetQuantity(ResourceType.IronOre));
     }
 
     [Fact]
@@ -926,12 +973,11 @@ public class ProductionCoordinatorTests
     {
         var coordinator = new ProductionCoordinator();
         var machine = CreateMachine(requiredCrew: requiredCrew);
+        Assert.True(coordinator.RegisterMachine(machine));
         if (enabled)
         {
-            machine.Enable();
+            coordinator.EnableMachine(machine.Id, CreateWorkforce(0));
         }
-
-        Assert.True(coordinator.RegisterMachine(machine));
         var workforce = CreateWorkforce(Math.Max(assignedWorkers, requiredCrew));
         AssignWorkers(workforce, machine.Id, assignedWorkers);
         var storage = RawMaterialsStorage((ResourceType.IronOre, 2));
@@ -1013,8 +1059,8 @@ public class ProductionCoordinatorTests
         var first = CreateSchematic("Iron plate", new Dictionary<ResourceType, int> { [ResourceType.IronOre] = 1 });
         var second = CreateSchematic("Copper plate", new Dictionary<ResourceType, int> { [ResourceType.CopperOre] = 1 });
         var machine = new Machine(Guid.NewGuid(), "Stamping press", 4, 1, 10, [first, second], first);
-        machine.Enable();
         Assert.True(coordinator.RegisterMachine(machine));
+        coordinator.EnableMachine(machine.Id, CreateWorkforce(0));
         var workforce = CreateWorkforce(1);
         AssignWorkers(workforce, machine.Id, 1);
         var storage = RawMaterialsStorage((ResourceType.IronOre, 1));
@@ -1055,8 +1101,8 @@ public class ProductionCoordinatorTests
             outputBufferCapacity,
             [schematic],
             schematic);
-        machine.Enable();
         Assert.True(coordinator.RegisterMachine(machine));
+        coordinator.EnableMachine(machine.Id, CreateWorkforce(0));
         return machine;
     }
 
@@ -1080,8 +1126,8 @@ public class ProductionCoordinatorTests
     private static Machine RegisterEnabledMachine(ProductionCoordinator coordinator, int requiredCrew)
     {
         var machine = CreateMachine(requiredCrew: requiredCrew);
-        machine.Enable();
         Assert.True(coordinator.RegisterMachine(machine));
+        coordinator.EnableMachine(machine.Id, CreateWorkforce(0));
         return machine;
     }
 
