@@ -83,15 +83,14 @@ public sealed class Machine
         IsEnabled = false;
     }
 
-    public bool TryStartCycle()
+    internal void StartCycle()
     {
         if (ActiveCycle is not null)
         {
-            return false;
+            throw new InvalidOperationException("Cannot start a cycle while another cycle is active.");
         }
 
         ActiveCycle = new ProductionCycle(SelectedSchematic);
-        return true;
     }
 
     public void SelectSchematic(Schematic schematic)

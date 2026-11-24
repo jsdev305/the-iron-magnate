@@ -210,14 +210,8 @@ public sealed class ProductionCoordinator
             throw;
         }
 
-        if (machine.TryStartCycle())
-        {
-            return true;
-        }
-
-        RestoreInputs(inputStorage, requirements);
-        machine.OutputBuffer.Release(schematic.OutputQuantity);
-        return false;
+        machine.StartCycle();
+        return true;
     }
 
     private static bool HasAvailableInputs(
@@ -232,21 +226,4 @@ public sealed class ProductionCoordinator
         });
     }
 
-    private static void RestoreInputs(
-        Storage inputStorage,
-        IReadOnlyCollection<ResourceQuantity> requirements)
-    {
-        foreach (var requirement in requirements)
-        {
-            var delivery = inputStorage.Deliver(
-                requirement.ResourceType,
-                requirement.Quantity);
-
-            if (delivery.AcceptedQuantity != requirement.Quantity)
-            {
-                throw new InvalidOperationException(
-                    "Could not restore inputs after cycle activation failed.");
-            }
-        }
-    }
 }

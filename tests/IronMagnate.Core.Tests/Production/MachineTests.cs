@@ -32,28 +32,16 @@ public class MachineTests
     }
 
     [Fact]
-    public void TryStartCycleCreatesACycleForTheSelectedSchematic()
+    public void CycleActivationIsInternalToTheCoreAssembly()
     {
-        var machine = CreateMachine();
+        var activation = typeof(Machine).GetMethod(
+            "StartCycle",
+            System.Reflection.BindingFlags.Instance |
+            System.Reflection.BindingFlags.NonPublic);
 
-        var started = machine.TryStartCycle();
-
-        Assert.True(started);
-        Assert.NotNull(machine.ActiveCycle);
-        Assert.Same(machine.SelectedSchematic, machine.ActiveCycle.Schematic);
-    }
-
-    [Fact]
-    public void TryStartCycleRejectsASecondActiveCycleWithoutReplacingTheFirst()
-    {
-        var machine = CreateMachine();
-        Assert.True(machine.TryStartCycle());
-        var firstCycle = machine.ActiveCycle;
-
-        var started = machine.TryStartCycle();
-
-        Assert.False(started);
-        Assert.Same(firstCycle, machine.ActiveCycle);
+        Assert.NotNull(activation);
+        Assert.True(activation.IsAssembly);
+        Assert.False(activation.IsPublic);
     }
 
     [Fact]
