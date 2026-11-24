@@ -1,6 +1,8 @@
 using IronMagnate.Core.Production;
 using IronMagnate.Core.Resources;
+using IronMagnate.Core.Storage;
 using FactoryWorkforce = IronMagnate.Core.Workforce.Workforce;
+using SupplyStorage = IronMagnate.Core.Storage.Storage;
 using Xunit;
 
 namespace IronMagnate.Core.Tests.Production;
@@ -758,6 +760,174 @@ public class ProductionCoordinatorTests
         Assert.Equal(14, workforce.IdleWorkers.Count);
     }
 
+    [Fact]
+    public void TryStartCycleCommitsInputsAndOutputReservationForTheSelectedSchematic()
+    {
+        var coordinator = new ProductionCoordinator();
+        var schematic = CreateSchematic(
+            "Copper plate",
+            new Dictionary<ResourceType, int> { [ResourceType.IronOre] = 3 },
+            outputQuantity: 2);
+        var machine = CreateEnabledMachine(coordinator, schematic, requiredCrew: 2, outputBufferCapacity: 2);
+        var workforce = CreateWorkforce(2);
+        AssignWorkers(workforce, machine.Id, 2);
+        var storage = RawMaterialsStorage((ResourceType.IronOre, 3));
+
+        var started = coordinator.TryStartCycle(machine.Id, workforce, hasPower: true, storage);
+
+        Assert.True(started);
+        Assert.NotNull(machine.ActiveCycle);
+        Assert.Same(schematic, machine.ActiveCycle.Schematic);
+        Assert.Equal(0, storage.GetQuantity(ResourceType.IronOre));
+        Assert.Equal(2, machine.OutputBuffer.ReservedQuantity);
+        Assert.Equal(0, machine.OutputBuffer.StoredQuantity);
+    }
+
+    [Fact]
+    public void TryStartCycleRejectsARepeatedStartWithoutFurtherMutation()
+    {
+        var coordinator = new ProductionCoordinator();
+        var schematic = CreateSchematic("Copper plate", new Dictionary<ResourceType, int> { [ResourceType.IronOre] = 2 });
+        var machine = CreateEnabledMachine(coordinator, schematic, requiredCrew: 1);
+        var workforce = CreateWorkforce(1);
+        AssignWorkers(workforce, machine.Id, 1);
+        var storage = RawMaterialsStorage((ResourceType.IronOre, 4));
+
+        Assert.True(coordinator.TryStartCycle(machine.Id, workforce, hasPower: true, storage));
+        var firstCycle = machine.ActiveCycle;
+
+        var startedAgain = coordinator.TryStartCycle(machine.Id, workforce, hasPower: true, storage);
+
+        Assert.False(startedAgain);
+        Assert.Same(firstCycle, machine.ActiveCycle);
+        Assert.Equal(2, storage.GetQuantity(ResourceType.IronOre));
+        Assert.Equal(1, machine.OutputBuffer.ReservedQuantity);
+    }
+
+    [Fact]
+    public void TryStartCycleRejectsAnUnknownMachineWithoutMutation()
+    {
+        var coordinator = new ProductionCoordinator();
+        var workforce = CreateWorkforce(1);
+        var storage = RawMaterialsStorage((ResourceType.IronOre, 2));
+
+        Assert.False(coordinator.TryStartCycle(Guid.NewGuid(), workforce, hasPower: true, storage));
+        Assert.Equal(2, storage.GetQuantity(ResourceType.IronOre));
+    }
+
+    [Theory]
+    [InlineData(false, true, 1, 1)]
+    [InlineData(true, false, 1, 1)]
+    [InlineData(true, true, 0, 1)]
+    [InlineData(true, true, 2, 1)]
+    public void TryStartCycleRejectsMachinesThatAreNotReadyWithoutMutation(
+        bool enabled,
+        bool hasPower,
+        int assignedWorkers,
+        int requiredCrew)
+    {
+        var coordinator = new ProductionCoordinator();
+        var machine = CreateMachine(requiredCrew: requiredCrew);
+        if (enabled)
+        {
+            machine.Enable();
+        }
+
+        Assert.True(coordinator.RegisterMachine(machine));
+        var workforce = CreateWorkforce(Math.Max(assignedWorkers, requiredCrew));
+        AssignWorkers(workforce, machine.Id, assignedWorkers);
+        var storage = RawMaterialsStorage((ResourceType.IronOre, 2));
+
+        var started = coordinator.TryStartCycle(machine.Id, workforce, hasPower, storage);
+
+        Assert.False(started);
+        Assert.Null(machine.ActiveCycle);
+        Assert.Equal(2, storage.GetQuantity(ResourceType.IronOre));
+        Assert.Equal(0, machine.OutputBuffer.ReservedQuantity);
+    }
+
+    [Fact]
+    public void TryStartCycleRejectsAnInputStorageThatDoesNotAcceptTheSchematicInputs()
+    {
+        var coordinator = new ProductionCoordinator();
+        var schematic = CreateSchematic("Copper plate", new Dictionary<ResourceType, int> { [ResourceType.IronOre] = 1 });
+        var machine = CreateEnabledMachine(coordinator, schematic, requiredCrew: 1);
+        var workforce = CreateWorkforce(1);
+        AssignWorkers(workforce, machine.Id, 1);
+        var storage = new SupplyStorage(
+            StorageType.PartsAndProducts,
+            20,
+            [ResourceCategory.ProcessedMaterial, ResourceCategory.ManufacturedGood]);
+
+        Assert.False(coordinator.TryStartCycle(machine.Id, workforce, hasPower: true, storage));
+        Assert.Null(machine.ActiveCycle);
+        Assert.Equal(0, machine.OutputBuffer.ReservedQuantity);
+    }
+
+    [Fact]
+    public void TryStartCycleDoesNotWithdrawInputsWhenFullOutputDoesNotFit()
+    {
+        var coordinator = new ProductionCoordinator();
+        var schematic = CreateSchematic(
+            "Copper plate",
+            new Dictionary<ResourceType, int> { [ResourceType.IronOre] = 2 },
+            outputQuantity: 2);
+        var machine = CreateEnabledMachine(coordinator, schematic, requiredCrew: 1, outputBufferCapacity: 1);
+        var workforce = CreateWorkforce(1);
+        AssignWorkers(workforce, machine.Id, 1);
+        var storage = RawMaterialsStorage((ResourceType.IronOre, 2));
+
+        Assert.False(coordinator.TryStartCycle(machine.Id, workforce, hasPower: true, storage));
+        Assert.Null(machine.ActiveCycle);
+        Assert.Equal(2, storage.GetQuantity(ResourceType.IronOre));
+        Assert.Equal(0, machine.OutputBuffer.ReservedQuantity);
+    }
+
+    [Fact]
+    public void TryStartCycleLeavesEveryMultiInputQuantityUnchangedWhenAnyInputIsInsufficient()
+    {
+        var coordinator = new ProductionCoordinator();
+        var schematic = CreateSchematic(
+            "Copper plate",
+            new Dictionary<ResourceType, int>
+            {
+                [ResourceType.IronOre] = 2,
+                [ResourceType.CopperOre] = 2,
+            });
+        var machine = CreateEnabledMachine(coordinator, schematic, requiredCrew: 1);
+        var workforce = CreateWorkforce(1);
+        AssignWorkers(workforce, machine.Id, 1);
+        var storage = RawMaterialsStorage(
+            (ResourceType.IronOre, 2),
+            (ResourceType.CopperOre, 1));
+
+        Assert.False(coordinator.TryStartCycle(machine.Id, workforce, hasPower: true, storage));
+        Assert.Null(machine.ActiveCycle);
+        Assert.Equal(2, storage.GetQuantity(ResourceType.IronOre));
+        Assert.Equal(1, storage.GetQuantity(ResourceType.CopperOre));
+        Assert.Equal(0, machine.OutputBuffer.ReservedQuantity);
+    }
+
+    [Fact]
+    public void TryStartCycleRetainsTheSchematicSelectedAtActivation()
+    {
+        var coordinator = new ProductionCoordinator();
+        var first = CreateSchematic("Iron plate", new Dictionary<ResourceType, int> { [ResourceType.IronOre] = 1 });
+        var second = CreateSchematic("Copper plate", new Dictionary<ResourceType, int> { [ResourceType.CopperOre] = 1 });
+        var machine = new Machine(Guid.NewGuid(), "Stamping press", 4, 1, 10, [first, second], first);
+        machine.Enable();
+        Assert.True(coordinator.RegisterMachine(machine));
+        var workforce = CreateWorkforce(1);
+        AssignWorkers(workforce, machine.Id, 1);
+        var storage = RawMaterialsStorage((ResourceType.IronOre, 1));
+
+        Assert.True(coordinator.TryStartCycle(machine.Id, workforce, hasPower: true, storage));
+        machine.SelectSchematic(second);
+
+        Assert.Same(first, machine.ActiveCycle!.Schematic);
+        Assert.Same(second, machine.SelectedSchematic);
+    }
+
     private static Machine CreateMachine(
         Guid? id = null,
         string name = "Stamping press",
@@ -771,6 +941,42 @@ public class ProductionCoordinatorTests
             15);
 
         return new Machine(id ?? Guid.NewGuid(), name, 4, requiredCrew, 10, [schematic], schematic);
+    }
+
+    private static Machine CreateEnabledMachine(
+        ProductionCoordinator coordinator,
+        Schematic schematic,
+        int requiredCrew,
+        int outputBufferCapacity = 10)
+    {
+        var machine = new Machine(
+            Guid.NewGuid(),
+            "Stamping press",
+            4,
+            requiredCrew,
+            outputBufferCapacity,
+            [schematic],
+            schematic);
+        machine.Enable();
+        Assert.True(coordinator.RegisterMachine(machine));
+        return machine;
+    }
+
+    private static Schematic CreateSchematic(
+        string name,
+        IReadOnlyDictionary<ResourceType, int> inputs,
+        int outputQuantity = 1) =>
+        new(name, inputs, ResourceType.CopperOre, outputQuantity, 15);
+
+    private static SupplyStorage RawMaterialsStorage(params (ResourceType Type, double Quantity)[] inventory)
+    {
+        var storage = new SupplyStorage(StorageType.RawMaterials, 20, [ResourceCategory.RawMaterial]);
+        foreach (var (type, quantity) in inventory)
+        {
+            storage.Deliver(type, quantity);
+        }
+
+        return storage;
     }
 
     private static Machine RegisterEnabledMachine(ProductionCoordinator coordinator, int requiredCrew)

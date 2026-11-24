@@ -1,5 +1,7 @@
 namespace IronMagnate.Core.Production;
 
+using IronMagnate.Core.Resources;
+using IronMagnate.Core.Storage;
 using IronMagnate.Core.Workforce;
 
 public sealed class ProductionCoordinator
@@ -156,5 +158,95 @@ public sealed class ProductionCoordinator
             return false;
 
         return IsFullyStaffed(machineId, workforce);
+    }
+
+    public bool TryStartCycle(
+        Guid machineId,
+        Workforce workforce,
+        bool hasPower,
+        Storage inputStorage)
+    {
+        ArgumentNullException.ThrowIfNull(workforce);
+        ArgumentNullException.ThrowIfNull(inputStorage);
+
+        var machine = GetMachine(machineId);
+        if (machine is null || machine.ActiveCycle is not null)
+        {
+            return false;
+        }
+
+        if (!CanOperate(machineId, workforce, hasPower))
+        {
+            return false;
+        }
+
+        var schematic = machine.SelectedSchematic;
+        var requirements = schematic.Inputs
+            .Select(input => new ResourceQuantity(input.Key, input.Value))
+            .ToList();
+
+        if (!HasAvailableInputs(inputStorage, requirements) ||
+            !machine.OutputBuffer.CanReserve(schematic.OutputQuantity))
+        {
+            return false;
+        }
+
+        if (!machine.OutputBuffer.TryReserve(schematic.OutputQuantity))
+        {
+            return false;
+        }
+
+        try
+        {
+            if (!inputStorage.TryWithdraw(requirements))
+            {
+                machine.OutputBuffer.Release(schematic.OutputQuantity);
+                return false;
+            }
+        }
+        catch
+        {
+            machine.OutputBuffer.Release(schematic.OutputQuantity);
+            throw;
+        }
+
+        if (machine.TryStartCycle())
+        {
+            return true;
+        }
+
+        RestoreInputs(inputStorage, requirements);
+        machine.OutputBuffer.Release(schematic.OutputQuantity);
+        return false;
+    }
+
+    private static bool HasAvailableInputs(
+        Storage inputStorage,
+        IReadOnlyCollection<ResourceQuantity> requirements)
+    {
+        return requirements.All(requirement =>
+        {
+            var resource = ResourceCatalog.Get(requirement.ResourceType);
+            return inputStorage.AcceptedCategories.Contains(resource.Category) &&
+                inputStorage.GetQuantity(requirement.ResourceType) >= requirement.Quantity;
+        });
+    }
+
+    private static void RestoreInputs(
+        Storage inputStorage,
+        IReadOnlyCollection<ResourceQuantity> requirements)
+    {
+        foreach (var requirement in requirements)
+        {
+            var delivery = inputStorage.Deliver(
+                requirement.ResourceType,
+                requirement.Quantity);
+
+            if (delivery.AcceptedQuantity != requirement.Quantity)
+            {
+                throw new InvalidOperationException(
+                    "Could not restore inputs after cycle activation failed.");
+            }
+        }
     }
 }

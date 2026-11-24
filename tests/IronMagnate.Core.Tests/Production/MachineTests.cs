@@ -32,6 +32,31 @@ public class MachineTests
     }
 
     [Fact]
+    public void TryStartCycleCreatesACycleForTheSelectedSchematic()
+    {
+        var machine = CreateMachine();
+
+        var started = machine.TryStartCycle();
+
+        Assert.True(started);
+        Assert.NotNull(machine.ActiveCycle);
+        Assert.Same(machine.SelectedSchematic, machine.ActiveCycle.Schematic);
+    }
+
+    [Fact]
+    public void TryStartCycleRejectsASecondActiveCycleWithoutReplacingTheFirst()
+    {
+        var machine = CreateMachine();
+        Assert.True(machine.TryStartCycle());
+        var firstCycle = machine.ActiveCycle;
+
+        var started = machine.TryStartCycle();
+
+        Assert.False(started);
+        Assert.Same(firstCycle, machine.ActiveCycle);
+    }
+
+    [Fact]
     public void CreatesMachineWithAnOutputBufferUsingTheConfiguredCapacity()
     {
         var machine = CreateMachine(outputBufferCapacity: 7);

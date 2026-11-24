@@ -83,6 +83,17 @@ public sealed class Machine
         IsEnabled = false;
     }
 
+    public bool TryStartCycle()
+    {
+        if (ActiveCycle is not null)
+        {
+            return false;
+        }
+
+        ActiveCycle = new ProductionCycle(SelectedSchematic);
+        return true;
+    }
+
     public void SelectSchematic(Schematic schematic)
     {
         ArgumentNullException.ThrowIfNull(schematic);
