@@ -20,6 +20,35 @@ public sealed class ProductionCoordinator
         return machines.GetValueOrDefault(machineId);
     }
 
+    public int EnableMachine(Guid machineId, Workforce workforce)
+    {
+        ArgumentNullException.ThrowIfNull(workforce);
+
+        var machine = GetMachine(machineId);
+        if (machine is null)
+        {
+            return 0;
+        }
+
+        machine.Enable();
+        return FillCrew(machineId, workforce);
+    }
+
+    public bool DisableMachine(Guid machineId, Workforce workforce)
+    {
+        ArgumentNullException.ThrowIfNull(workforce);
+
+        var machine = GetMachine(machineId);
+        if (machine is null)
+        {
+            return false;
+        }
+
+        machine.Disable();
+        workforce.ReleaseWorkstation(machine.Id.ToString());
+        return true;
+    }
+
     public bool IsFullyStaffed(Guid machineId, Workforce workforce)
     {
         ArgumentNullException.ThrowIfNull(workforce);
@@ -40,58 +69,28 @@ public sealed class ProductionCoordinator
 
     public int FillCrew(Guid machineId, Workforce workforce)
     {
-        /**
-        Find the register machine
-        Check whether its enabled
-        calculate its vacant positions
-        select available, unassigned workers in a consistent order
-        assign only as many as needed, never exceeding
-        */
-
         ArgumentNullException.ThrowIfNull(workforce);
 
-        Machine? machine = GetMachine(machineId);
+        var machine = GetMachine(machineId);
 
         if (machine is null || !machine.IsEnabled)
         {
             return 0;
         }
 
+        var workstationId = machine.Id.ToString();
+        var assignedBefore = workforce.Assignments.Count(
+            assignment => assignment.WorkstationId == workstationId);
 
-        int assignedCount = workforce.Assignments.Count(
-    assignment => assignment.WorkstationId == machineId.ToString()
-);
-
-        int vacancies = machine.RequiredCrew - assignedCount;
-
-        int workersToAssign = Math.Min(
-            vacancies,
-            workforce.IdleWorkers.Count
-        );
-
-        if (workersToAssign <= 0)
+        if (!workforce.TryAllocateCrew(
+                workstationId,
+                machine.RequiredCrew,
+                out var assignedCrew))
         {
             return 0;
         }
 
-        var selectedWorkers = workforce.IdleWorkers
-            .Take(workersToAssign)
-            .ToList();
-
-        int assigned = 0;
-
-        foreach (var worker in selectedWorkers)
-        {
-            if (TryAssignWorker(machineId, worker.Id, workforce))
-            {
-                assigned++;
-            }
-        }
-
-        return assigned;
-
-
-
+        return assignedCrew.Count - assignedBefore;
     }
 
     public bool TryAssignWorker(
